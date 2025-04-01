@@ -1,9 +1,20 @@
-use esp_idf_hal::gpio::*;
-use esp_idf_hal::peripherals::Peripherals;
-use esp_idf_hal::gpio::InterruptType;
-use std::num::NonZeroU32;
+use esp_idf_hal::{
+    delay::FreeRtos,
+    gpio::{self, PinDriver},
+    pcnt::*,
+    peripherals::Peripherals,
+};
+use std::{
+    cmp::min,
+    sync::{
+        atomic::{AtomicI32, Ordering},
+        Arc,
+    },
+};
 
 const CPR: f32 = 500.0;
+const LOW_LIMIT: i16 = -100;
+const HIGH_LIMIT: i16 = 100;
 
 fn main() {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -15,34 +26,83 @@ fn main() {
 
     let peripherals = Peripherals::take().unwrap();
 
-    let notification = esp_idf_hal::task::notification::Notification::new();
-    let notifier = notification.notifier();
-
-    let mut ch_a = PinDriver::input(peripherals.pins.gpio5).unwrap();
+    //let mut ch_a = PinDriver::input(peripherals.pins.gpio5).unwrap();
+    //let mut ch_b = PinDriver::input(peripherals.pins.gpio4).unwrap();
     let mut high = PinDriver::output(peripherals.pins.gpio25).unwrap();
-
-    let mut timer = esp_idf_hal::timer::TimerDriver::new(peripherals.timer00, &esp_idf_hal::timer::config::Config::default()).unwrap();
-    
-    ch_a.set_pull(Pull::Down).unwrap();
     high.set_high().unwrap();
 
-    ch_a.set_interrupt_type(InterruptType::NegEdge).unwrap();
+    let mut driver = PcntDriver::new(
+        peripherals.pcnt0,
+        Some(peripherals.pins.gpio5),
+        Some(peripherals.pins.gpio4),
+        Option::<gpio::AnyInputPin>::None,
+        Option::<gpio::AnyInputPin>::None,
+    )
+    .unwrap();
 
-    timer.enable(true).unwrap();
+    driver
+        .channel_config(
+            PcntChannel::Channel0,
+            PinIndex::Pin0,
+            PinIndex::Pin1,
+            &PcntChannelConfig {
+                lctrl_mode: PcntControlMode::Reverse,
+                hctrl_mode: PcntControlMode::Keep,
+                pos_mode: PcntCountMode::Decrement,
+                neg_mode: PcntCountMode::Increment,
+                counter_h_lim: HIGH_LIMIT,
+                counter_l_lim: LOW_LIMIT,
+            },
+        )
+        .unwrap();
+
+    driver
+        .channel_config(
+            PcntChannel::Channel1,
+            PinIndex::Pin1,
+            PinIndex::Pin0,
+            &PcntChannelConfig {
+                lctrl_mode: PcntControlMode::Reverse,
+                hctrl_mode: PcntControlMode::Keep,
+                pos_mode: PcntCountMode::Decrement,
+                neg_mode: PcntCountMode::Increment,
+                counter_h_lim: HIGH_LIMIT,
+                counter_l_lim: LOW_LIMIT,
+            },
+        )
+        .unwrap();
+
+    driver.set_filter_value(min(1023, 0 /*10 * 80*/)).unwrap();
+    driver.filter_enable().unwrap();
+
+    let approx_value = Arc::new(AtomicI32::new(0));
 
     unsafe {
-        ch_a.subscribe(move || {
-            notifier.notify_and_yield(NonZeroU32::new(1).unwrap());
-        }).unwrap();
+        let approx_value = approx_value.clone();
+        driver
+            .subscribe(move |status| {
+                let status = PcntEventType::from_repr_truncated(status);
+                println!("ahh");
+                if status.contains(PcntEvent::HighLimit) {
+                    approx_value.fetch_add(HIGH_LIMIT as i32, Ordering::SeqCst);
+                }
+                if status.contains(PcntEvent::LowLimit) {
+                    approx_value.fetch_add(LOW_LIMIT as i32, Ordering::SeqCst);
+                }
+            })
+            .unwrap();
     }
 
+    driver.event_enable(PcntEvent::HighLimit).unwrap();
+    driver.event_enable(PcntEvent::LowLimit).unwrap();
+    driver.counter_pause().unwrap();
+    driver.counter_clear().unwrap();
+    driver.counter_resume().unwrap();
+
     loop {
-        ch_a.enable_interrupt().unwrap();
-        notification.wait(esp_idf_hal::delay::BLOCK);
-
-        let elapsed = (timer.counter().unwrap() as f32) / 10.0f32.powi(6) / 60f32;
-        timer.set_counter(0).unwrap();
-
-        println!("speed: {:#?}!", 1.0 / CPR / elapsed);
+        let value =
+            approx_value.load(Ordering::Relaxed) + driver.get_counter_value().unwrap() as i32;
+        println!("value: {:#?}", value);
+        FreeRtos::delay_ms(100u32);
     }
 }
