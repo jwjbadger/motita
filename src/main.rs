@@ -1,6 +1,8 @@
 use esp_idf_hal::{
     delay::FreeRtos,
     gpio::{self, PinDriver},
+    ledc,
+    units,
     pcnt::*,
     peripherals::Peripherals,
 };
@@ -30,6 +32,26 @@ fn main() {
     //let mut ch_b = PinDriver::input(peripherals.pins.gpio4).unwrap();
     let mut high = PinDriver::output(peripherals.pins.gpio25).unwrap();
     high.set_high().unwrap();
+
+    let ledc = peripherals.ledc;
+    let mut motor_driver = ledc::LedcDriver::new(
+        ledc.channel0,
+        ledc::LedcTimerDriver::new(
+            ledc.timer0,
+            &ledc::config::TimerConfig {
+                frequency: units::Hertz(1000),
+                resolution: ledc::Resolution::Bits8, 
+            },
+        )
+        .unwrap(),
+        peripherals.pins.gpio13,
+    ).unwrap();
+
+    motor_driver.set_duty(motor_driver.get_max_duty() / 2).unwrap();
+
+    println!("duty: {}", motor_driver.get_duty());
+
+    motor_driver.enable().unwrap();
 
     let mut driver = PcntDriver::new(
         peripherals.pcnt0,
@@ -103,7 +125,7 @@ fn main() {
         let value =
             approx_value.load(Ordering::Relaxed) + driver.get_counter_value().unwrap() as i32;
 
-        println!("speed: {:#?}", (value - last_value) as f32 / CPR / (100f32 * 10f32.powi(-3)));
+        let speed = (value - last_value) as f32 / CPR / (100f32 * 10f32.powi(-3));
 
         last_value = value;
         FreeRtos::delay_ms(100u32);
