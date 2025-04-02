@@ -13,8 +13,8 @@ use std::{
 };
 
 const CPR: f32 = 500.0;
-const LOW_LIMIT: i16 = -100;
-const HIGH_LIMIT: i16 = 100;
+const LOW_LIMIT: i16 = -1000;
+const HIGH_LIMIT: i16 = 1000;
 
 fn main() {
     // It is necessary to call this function once. Otherwise some patches to the runtime
@@ -64,8 +64,8 @@ fn main() {
             &PcntChannelConfig {
                 lctrl_mode: PcntControlMode::Reverse,
                 hctrl_mode: PcntControlMode::Keep,
-                pos_mode: PcntCountMode::Decrement,
-                neg_mode: PcntCountMode::Increment,
+                pos_mode: PcntCountMode::Increment,
+                neg_mode: PcntCountMode::Decrement,
                 counter_h_lim: HIGH_LIMIT,
                 counter_l_lim: LOW_LIMIT,
             },
@@ -82,7 +82,6 @@ fn main() {
         driver
             .subscribe(move |status| {
                 let status = PcntEventType::from_repr_truncated(status);
-                println!("ahh");
                 if status.contains(PcntEvent::HighLimit) {
                     approx_value.fetch_add(HIGH_LIMIT as i32, Ordering::SeqCst);
                 }
@@ -99,10 +98,14 @@ fn main() {
     driver.counter_clear().unwrap();
     driver.counter_resume().unwrap();
 
+    let mut last_value: i32 = 0;
     loop {
         let value =
             approx_value.load(Ordering::Relaxed) + driver.get_counter_value().unwrap() as i32;
-        println!("value: {:#?}", value);
+
+        println!("speed: {:#?}", (value - last_value) as f32 / CPR / (100f32 * 10f32.powi(-3)));
+
+        last_value = value;
         FreeRtos::delay_ms(100u32);
     }
 }
