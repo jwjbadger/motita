@@ -19,6 +19,11 @@ const LOW_LIMIT: i16 = -1000;
 const HIGH_LIMIT: i16 = 1000;
 
 fn main() {
+    let mut speed_control: f32 = 1.0;
+    let k_i: f32 = 0.005;
+    let k_p: f32 = 0.11;
+    let k_d: f32 = 0.0001;
+
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
@@ -44,16 +49,15 @@ fn main() {
             },
         )
         .unwrap(),
-        peripherals.pins.gpio13,
+        peripherals.pins.gpio18,
     ).unwrap();
 
-    motor_driver.set_duty(motor_driver.get_max_duty() / 2).unwrap();
+    let max_duty = motor_driver.get_max_duty();
 
-    println!("duty: {}", motor_driver.get_duty());
-
+    motor_driver.set_duty((max_duty as f32 * speed_control.clamp(0.0, 1.0)) as u32).unwrap();
     motor_driver.enable().unwrap();
 
-    let mut driver = PcntDriver::new(
+    let mut pcnt_driver = PcntDriver::new(
         peripherals.pcnt0,
         Some(peripherals.pins.gpio5),
         Some(peripherals.pins.gpio4),
@@ -62,7 +66,7 @@ fn main() {
     )
     .unwrap();
 
-    driver
+    pcnt_driver
         .channel_config(
             PcntChannel::Channel0,
             PinIndex::Pin0,
@@ -78,7 +82,7 @@ fn main() {
         )
         .unwrap();
 
-    driver
+    pcnt_driver
         .channel_config(
             PcntChannel::Channel1,
             PinIndex::Pin1,
@@ -94,14 +98,14 @@ fn main() {
         )
         .unwrap();
 
-    driver.set_filter_value(min(1023, 0 /*10 * 80*/)).unwrap();
-    driver.filter_enable().unwrap();
+    pcnt_driver.set_filter_value(min(1023, 0 /*10 * 80*/)).unwrap();
+    pcnt_driver.filter_enable().unwrap();
 
     let approx_value = Arc::new(AtomicI32::new(0));
 
     unsafe {
         let approx_value = approx_value.clone();
-        driver
+        pcnt_driver
             .subscribe(move |status| {
                 let status = PcntEventType::from_repr_truncated(status);
                 if status.contains(PcntEvent::HighLimit) {
@@ -114,20 +118,36 @@ fn main() {
             .unwrap();
     }
 
-    driver.event_enable(PcntEvent::HighLimit).unwrap();
-    driver.event_enable(PcntEvent::LowLimit).unwrap();
-    driver.counter_pause().unwrap();
-    driver.counter_clear().unwrap();
-    driver.counter_resume().unwrap();
+    pcnt_driver.event_enable(PcntEvent::HighLimit).unwrap();
+    pcnt_driver.event_enable(PcntEvent::LowLimit).unwrap();
+    pcnt_driver.counter_pause().unwrap();
+    pcnt_driver.counter_clear().unwrap();
+    pcnt_driver.counter_resume().unwrap();
 
     let mut last_value: i32 = 0;
+
+    let target_velocity: f32 = 4.5;
+
+    let mut integral: f32 = 0.0;
+    let mut last_error: f32 = 0.0;
     loop {
         let value =
-            approx_value.load(Ordering::Relaxed) + driver.get_counter_value().unwrap() as i32;
+            approx_value.load(Ordering::Relaxed) + pcnt_driver.get_counter_value().unwrap() as i32;
 
-        let speed = (value - last_value) as f32 / CPR / (100f32 * 10f32.powi(-3));
+        let velocity = (value - last_value) as f32 / CPR / (0.05);
+
+        let error = target_velocity - velocity;
+        integral += error * 0.05;
+        let u = k_p * error + k_i * integral + k_d * ((error - last_error) / 0.05);
+        speed_control += u;
+
+        motor_driver.set_duty((max_duty as f32 * speed_control.clamp(0.0, 1.0)) as u32).unwrap();
+
+        println!("velocity: {:.2}", velocity);
 
         last_value = value;
-        FreeRtos::delay_ms(100u32);
+        last_error = error;
+
+        FreeRtos::delay_ms(50u32); // 0.1 s
     }
 }
