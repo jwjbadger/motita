@@ -1,7 +1,6 @@
 use esp_idf_hal::{
-    gpio::{AnyInputPin, AnyOutputPin},
-    ledc,
-    pcnt::*,
+    gpio::{Output, AnyInputPin, AnyOutputPin, PinDriver},
+    ledc, pcnt::*,
     peripheral::Peripheral,
     units,
 };
@@ -25,6 +24,7 @@ where
     pub pcnt: N,
     pub ch_a: AnyInputPin,
     pub ch_b: AnyInputPin,
+    pub dir: AnyOutputPin
 }
 
 pub struct MotorController<'a> {
@@ -32,6 +32,7 @@ pub struct MotorController<'a> {
     pwm_driver: ledc::LedcDriver<'a>,
     pcnt_driver: PcntDriver<'a>,
     counter: Arc<AtomicI32>,
+    dir: PinDriver<'a, AnyOutputPin, Output>
 }
 
 impl<'a> MotorController<'a> {
@@ -136,6 +137,7 @@ impl<'a> MotorController<'a> {
             pwm_driver,
             pcnt_driver,
             counter,
+            dir: PinDriver::output(config.dir).unwrap()
         }
     }
 
@@ -145,15 +147,28 @@ impl<'a> MotorController<'a> {
             .unwrap();
     }
 
+    pub fn set_direction(&mut self, direction: Direction) {
+       match direction {
+            Direction::CCW => self.dir.set_high().unwrap(),
+            Direction::CW => self.dir.set_low().unwrap(),
+       }; 
+    }
+
     pub fn get_counter(&self) -> i32 {
         self.counter.load(Ordering::SeqCst) + self.pcnt_driver.get_counter_value().unwrap() as i32
     }
+}
+
+pub enum Direction {
+    CW,
+    CCW
 }
 
 pub struct PIDController<'a, 'b> {
     motor_controller: &'a mut MotorController<'b>,
     last_value: i32,
     last_error: f32,
+    integral: f32,
     speed_control: f32,
     k_i: f32,
     k_d: f32,
@@ -166,6 +181,7 @@ impl<'a, 'b> PIDController<'a, 'b> {
             motor_controller,
             last_value: 0,
             last_error: 0.0,
+            integral: 0.0,
             speed_control: 0.0,
             k_i: 0.005,
             k_d: 0.00003,
@@ -175,7 +191,7 @@ impl<'a, 'b> PIDController<'a, 'b> {
 
     pub fn get_velocity(&mut self, dt: f32) -> f32 {
         let value = self.motor_controller.get_counter();
-        let velocity = (value - self.last_value) as f32 / dt;
+        let velocity = (value - self.last_value) as f32 / (500.0 * dt);
 
         self.last_value = self.motor_controller.get_counter();
 
@@ -185,11 +201,26 @@ impl<'a, 'b> PIDController<'a, 'b> {
     pub fn step_towards(&mut self, target_velocity: f32, dt: f32) {
         let velocity = self.get_velocity(dt);
 
+        println!("velocity {:?}", velocity);
+
         let error = target_velocity - velocity;
-        self.speed_control +=
-            self.k_p * error + self.k_i * error * dt + self.k_d * ((error - self.last_error) / dt);
+        self.integral += error * dt;
+        let mut delta =
+            self.k_p * error + self.k_i * self.integral + self.k_d * ((error - self.last_error) / dt);
+
         self.last_error = error;
 
-        self.motor_controller.set_speed(self.speed_control);
+        if delta.abs() > self.speed_control.abs() && (delta * self.speed_control < 0.0 || self.speed_control == 0.0) {
+            self.speed_control += delta;
+            if self.speed_control < 0.0 {
+                self.motor_controller.set_direction(Direction::CCW);
+            } else {
+                self.motor_controller.set_direction(Direction::CW);
+            }
+        } else {
+            self.speed_control += delta;
+        }
+
+        self.motor_controller.set_speed(self.speed_control.abs());
     }
 }

@@ -2,7 +2,7 @@ use esp_idf_hal::{delay::FreeRtos, gpio::PinDriver, peripherals::Peripherals};
 
 use motita::motor::*;
 
-const SET_SPEED: f32 = 8.0;
+const SET_SPEED: f32 = 4.0;
 
 fn main() {
     esp_idf_svc::sys::link_patches();
@@ -22,6 +22,7 @@ fn main() {
             pcnt: peripherals.pcnt0,
             ch_a: peripherals.pins.gpio4.into(),
             ch_b: peripherals.pins.gpio5.into(),
+            dir: peripherals.pins.gpio15.into(),
         },
     );
 
@@ -33,6 +34,7 @@ fn main() {
             pcnt: peripherals.pcnt1,
             ch_a: peripherals.pins.gpio22.into(),
             ch_b: peripherals.pins.gpio23.into(),
+            dir: peripherals.pins.gpio21.into(),
         },
     );
 
@@ -40,18 +42,12 @@ fn main() {
     let mut motor_b_controller = PIDController::new(&mut motor_b);
 
     loop {
-        let velocity_a = motor_a_controller.get_velocity(0.05);
-        let velocity_b = motor_b_controller.get_velocity(0.05);
+        for i in 0..200 {
+            let dir = if i > 100 { 1.0 } else { -1.0 };
+            motor_a_controller.step_towards(SET_SPEED * dir, 0.05);
+            motor_b_controller.step_towards(SET_SPEED * dir, 0.05);
 
-        println!(
-            "velocity: {:.2} with deviation {:.2}",
-            (velocity_a + velocity_b) / 2.0,
-            (velocity_a - velocity_b).abs()
-        );
-
-        motor_a_controller.step_towards(SET_SPEED, 0.05);
-        motor_b_controller.step_towards(SET_SPEED, 0.05);
-
-        FreeRtos::delay_ms(50u32); // 0.05 s
+            FreeRtos::delay_ms(50u32); // 0.05 s
+        }
     }
 }
