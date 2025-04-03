@@ -1,27 +1,30 @@
 use esp_idf_hal::{
-    gpio::{AnyOutputPin, AnyInputPin},
+    gpio::{AnyInputPin, AnyOutputPin},
     ledc,
-    units,
     pcnt::*,
     peripheral::Peripheral,
+    units,
 };
 
 use std::{
+    cmp::min,
     sync::{
         atomic::{AtomicI32, Ordering},
         Arc,
     },
-    cmp::min
 };
 
 const LOW_LIMIT: i16 = -1000;
 const HIGH_LIMIT: i16 = 1000;
 
-pub struct MotorControllerConfig<N> where N: Peripheral<P: Pcnt> {
+pub struct MotorControllerConfig<N>
+where
+    N: Peripheral<P: Pcnt>,
+{
     pub pwm_pin: AnyOutputPin,
     pub pcnt: N,
     pub ch_a: AnyInputPin,
-    pub ch_b: AnyInputPin
+    pub ch_b: AnyInputPin,
 }
 
 pub struct MotorController<'a> {
@@ -32,19 +35,28 @@ pub struct MotorController<'a> {
 }
 
 impl<'a> MotorController<'a> {
-    pub fn new(ledc: ledc::LEDC, config: MotorControllerConfig<impl Peripheral<P = impl Pcnt> + 'a>) -> Self {
+    pub fn new<T, C>(
+        ledc_timer: impl Peripheral<P = T> + 'a,
+        ledc_channel: impl Peripheral<P = C> + 'a,
+        config: MotorControllerConfig<impl Peripheral<P = impl Pcnt> + 'a>,
+    ) -> Self
+    where
+        T: ledc::LedcTimer + 'a,
+        C: ledc::LedcChannel<SpeedMode = <T as ledc::LedcTimer>::SpeedMode> + 'a,
+    {
         let mut pwm_driver = ledc::LedcDriver::new(
-            ledc.channel0,
+            ledc_channel,
             ledc::LedcTimerDriver::new(
-                ledc.timer0,
+                ledc_timer,
                 &ledc::config::TimerConfig {
                     frequency: units::Hertz(1000),
-                    resolution: ledc::Resolution::Bits8, 
+                    resolution: ledc::Resolution::Bits8,
                 },
             )
             .unwrap(),
             config.pwm_pin,
-        ).unwrap();
+        )
+        .unwrap();
 
         let max_duty = pwm_driver.get_max_duty();
 
@@ -58,7 +70,7 @@ impl<'a> MotorController<'a> {
             Option::<AnyInputPin>::None,
             Option::<AnyInputPin>::None,
         )
-            .unwrap();
+        .unwrap();
 
         pcnt_driver
             .channel_config(
@@ -92,7 +104,9 @@ impl<'a> MotorController<'a> {
             )
             .unwrap();
 
-        pcnt_driver.set_filter_value(min(1023, 0 /*10 * 80*/)).unwrap();
+        pcnt_driver
+            .set_filter_value(min(1023, 0 /*10 * 80*/))
+            .unwrap();
         pcnt_driver.filter_enable().unwrap();
         let counter = Arc::new(AtomicI32::new(0));
 
@@ -108,8 +122,8 @@ impl<'a> MotorController<'a> {
                         counter.fetch_add(LOW_LIMIT as i32, Ordering::SeqCst);
                     }
                 })
-            .unwrap();
-            }
+                .unwrap();
+        }
 
         pcnt_driver.event_enable(PcntEvent::HighLimit).unwrap();
         pcnt_driver.event_enable(PcntEvent::LowLimit).unwrap();
@@ -121,12 +135,14 @@ impl<'a> MotorController<'a> {
             max_duty,
             pwm_driver,
             pcnt_driver,
-            counter
+            counter,
         }
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.pwm_driver.set_duty((self.max_duty as f32 * speed.clamp(0.0, 1.0)) as u32).unwrap();
+        self.pwm_driver
+            .set_duty((self.max_duty as f32 * speed.clamp(0.0, 1.0)) as u32)
+            .unwrap();
     }
 
     pub fn get_counter(&self) -> i32 {
@@ -135,7 +151,7 @@ impl<'a> MotorController<'a> {
 }
 
 pub struct PIDController<'a, 'b> {
-    motor_controller:  &'a mut MotorController<'b>,
+    motor_controller: &'a mut MotorController<'b>,
     last_value: i32,
     last_error: f32,
     speed_control: f32,
@@ -170,7 +186,8 @@ impl<'a, 'b> PIDController<'a, 'b> {
         let velocity = self.get_velocity(dt);
 
         let error = target_velocity - velocity;
-        self.speed_control += self.k_p * error + self.k_i * error * dt + self.k_d * ((error - self.last_error) / dt);
+        self.speed_control +=
+            self.k_p * error + self.k_i * error * dt + self.k_d * ((error - self.last_error) / dt);
         self.last_error = error;
 
         self.motor_controller.set_speed(self.speed_control);
