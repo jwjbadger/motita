@@ -1,6 +1,7 @@
 use esp_idf_hal::{
-    gpio::{Output, AnyInputPin, AnyOutputPin, PinDriver},
-    ledc, pcnt::*,
+    gpio::{AnyInputPin, AnyOutputPin, Output, PinDriver},
+    ledc,
+    pcnt::*,
     peripheral::Peripheral,
     units,
 };
@@ -24,7 +25,7 @@ where
     pub pcnt: N,
     pub ch_a: AnyInputPin,
     pub ch_b: AnyInputPin,
-    pub dir: AnyOutputPin
+    pub dir: AnyOutputPin,
 }
 
 pub struct MotorController<'a> {
@@ -32,7 +33,7 @@ pub struct MotorController<'a> {
     pwm_driver: ledc::LedcDriver<'a>,
     pcnt_driver: PcntDriver<'a>,
     counter: Arc<AtomicI32>,
-    dir: PinDriver<'a, AnyOutputPin, Output>
+    dir: PinDriver<'a, AnyOutputPin, Output>,
 }
 
 impl<'a> MotorController<'a> {
@@ -137,7 +138,7 @@ impl<'a> MotorController<'a> {
             pwm_driver,
             pcnt_driver,
             counter,
-            dir: PinDriver::output(config.dir).unwrap()
+            dir: PinDriver::output(config.dir).unwrap(),
         }
     }
 
@@ -148,10 +149,10 @@ impl<'a> MotorController<'a> {
     }
 
     pub fn set_direction(&mut self, direction: Direction) {
-       match direction {
+        match direction {
             Direction::CCW => self.dir.set_high().unwrap(),
             Direction::CW => self.dir.set_low().unwrap(),
-       }; 
+        };
     }
 
     pub fn get_counter(&self) -> i32 {
@@ -161,7 +162,7 @@ impl<'a> MotorController<'a> {
 
 pub enum Direction {
     CW,
-    CCW
+    CCW,
 }
 
 pub struct PIDController<'a, 'b> {
@@ -198,6 +199,11 @@ impl<'a, 'b> PIDController<'a, 'b> {
         velocity
     }
 
+    pub fn halt(&mut self) {
+        self.speed_control = 0.0;
+        self.motor_controller.set_speed(0.0);
+    }
+
     pub fn step_towards(&mut self, target_velocity: f32, dt: f32) {
         let velocity = self.get_velocity(dt);
 
@@ -205,12 +211,15 @@ impl<'a, 'b> PIDController<'a, 'b> {
 
         let error = target_velocity - velocity;
         self.integral += error * dt;
-        let mut delta =
-            self.k_p * error + self.k_i * self.integral + self.k_d * ((error - self.last_error) / dt);
+        let delta = self.k_p * error
+            + self.k_i * self.integral
+            + self.k_d * ((error - self.last_error) / dt);
 
         self.last_error = error;
 
-        if delta.abs() > self.speed_control.abs() && (delta * self.speed_control < 0.0 || self.speed_control == 0.0) {
+        if delta.abs() > self.speed_control.abs()
+            && (delta * self.speed_control < 0.0 || self.speed_control == 0.0)
+        {
             self.speed_control += delta;
             if self.speed_control < 0.0 {
                 self.motor_controller.set_direction(Direction::CCW);
