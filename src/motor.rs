@@ -191,10 +191,16 @@ impl<'a, 'b> PIDController<'a, 'b> {
     }
 
     pub fn get_velocity(&mut self, dt: f32) -> f32 {
-        let value = self.motor_controller.get_counter();
-        let velocity = (value - self.last_value) as f32 / (500.0 * dt);
+        let velocity = self.get_velocity_weak(dt);
 
         self.last_value = self.motor_controller.get_counter();
+
+        velocity
+    }
+
+    pub fn get_velocity_weak(&mut self, dt: f32) -> f32 {
+        let value = self.motor_controller.get_counter();
+        let velocity = (value - self.last_value) as f32 / (500.0 * dt);
 
         velocity
     }
@@ -207,15 +213,28 @@ impl<'a, 'b> PIDController<'a, 'b> {
     pub fn step_towards(&mut self, target_velocity: f32, dt: f32) {
         let velocity = self.get_velocity(dt);
 
-        println!("velocity {:?}", velocity);
-
         let error = target_velocity - velocity;
         self.integral += error * dt;
-        let delta = self.k_p * error
-            + self.k_i * self.integral
-            + self.k_d * ((error - self.last_error) / dt);
+        
+        self.step(error, self.integral, (error - self.last_error) / dt);
 
         self.last_error = error;
+    }
+
+    pub fn step_towards_with_integral(&mut self, target_velocity: f32, dt: f32, integral: f32) {
+        let velocity = self.get_velocity(dt);
+
+        let error = target_velocity - velocity;
+        self.step(error, integral, (error - self.last_error) / dt);
+
+        self.last_error = error;
+    }
+
+    fn step(&mut self, error: f32, integral: f32, derivative: f32) {
+        let delta = self.k_p * error
+            + self.k_i * integral 
+            + self.k_d * derivative;
+
 
         if delta.abs() > self.speed_control.abs()
             && (delta * self.speed_control < 0.0 || self.speed_control == 0.0)

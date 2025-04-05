@@ -9,7 +9,9 @@ use std::num::NonZeroU32;
 
 use motita::motor::*;
 
-const SET_SPEED: f32 = 4.0;
+const SET_SPEED: f32 = 8.0;
+const FREQUENCY: u64 = 60;
+const PERIOD: f32 = 1.0 / FREQUENCY as f32;
 
 enum Message {
     CW,
@@ -50,7 +52,7 @@ fn main() {
     let mut timer = TimerDriver::new(peripherals.timer00, &timer_conf).unwrap();
 
     // 60 Hz PID
-    timer.set_alarm(timer.tick_hz() / 60).unwrap();
+    timer.set_alarm(timer.tick_hz() / FREQUENCY).unwrap();
 
     let notification = Notification::new();
 
@@ -135,6 +137,8 @@ fn main() {
 
     let mut dir = Direction::CW;
     let mut enable = false;
+    let mut integral: f32 = 0.0;
+
     loop {
         let bitset = notification.wait(esp_idf_hal::delay::BLOCK).unwrap();
 
@@ -152,9 +156,12 @@ fn main() {
                     Direction::CW => 1.0,
                     Direction::CCW => -1.0,
                 };
+
+                integral += (motor_a_controller.get_velocity_weak(PERIOD) - motor_b_controller.get_velocity_weak(PERIOD)) * PERIOD;
+
                 if enable {
-                    motor_a_controller.step_towards(SET_SPEED * dir, 0.05);
-                    motor_b_controller.step_towards(SET_SPEED * dir, 0.05);
+                    motor_a_controller.step_towards_with_integral(SET_SPEED * dir, PERIOD, -1.0 * integral);
+                    motor_b_controller.step_towards_with_integral(SET_SPEED * dir, PERIOD, integral);
                 } else {
                     // TODO: does this actually stop the motor
                     motor_a_controller.halt();
