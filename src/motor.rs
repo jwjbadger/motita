@@ -243,6 +243,6 @@ impl<'a, 'b> PIDController<'a, 'b> {
 
         self.speed_control = self.speed_control.clamp(-1.0, 1.0);
 
-        self.motor_controller.set_speed(if self.speed_control.abs() > 0.01 {self.speed_control.abs()} else {0.0});
+        self.motor_controller.set_speed(self.speed_control.abs());
     }
 }

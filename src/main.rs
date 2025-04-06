@@ -12,36 +12,7 @@ use motita::motor::*;
 const SET_SPEED: f32 = 8.0;
 const FREQUENCY: u64 = 60;
 const PERIOD: f32 = 1.0 / FREQUENCY as f32;
-
-enum Message {
-    CW,
-    CCW,
-    TIMER,
-    ERR,
-}
-
-impl From<NonZeroU32> for Message {
-    fn from(bitset: NonZeroU32) -> Self {
-        match bitset.get() {
-            0b10000000000 => Message::CW,
-            0b01000000000 => Message::CCW,
-            0b00010000000 => Message::TIMER,
-            _ => Message::ERR,
-        }
-    }
-}
-
-impl From<Message> for NonZeroU32 {
-    fn from(bitset: Message) -> Self {
-        Self::new(match bitset {
-            Message::CW => 0b10000000000,
-            Message::CCW => 0b01000000000,
-            Message::TIMER => 0b00010000000,
-            Message::ERR => 0b00000000000,
-        })
-        .unwrap()
-    }
-}
+const BITSET: NonZeroU32 = NonZeroU32::new(0b10001010101).unwrap();
 
 fn main() {
     esp_idf_svc::sys::link_patches();
@@ -56,15 +27,12 @@ fn main() {
     timer.set_alarm(timer.tick_hz() / FREQUENCY).unwrap();
 
     let notification = Notification::new();
-
-    let motor_notifier = notification.notifier();
-    let cw_notifier = motor_notifier.clone();
-    let ccw_notifier = motor_notifier.clone();
+    let notifier = notification.notifier();
 
     unsafe {
         timer
             .subscribe(move || {
-                motor_notifier.notify_and_yield(Message::TIMER.into());
+                notifier.notify_and_yield(BITSET);
             })
             .unwrap();
     }
@@ -78,26 +46,6 @@ fn main() {
 
     cw_trigger.set_pull(Pull::Down).unwrap();
     ccw_trigger.set_pull(Pull::Down).unwrap();
-
-    cw_trigger
-        .set_interrupt_type(InterruptType::AnyEdge)
-        .unwrap();
-    ccw_trigger
-        .set_interrupt_type(InterruptType::AnyEdge)
-        .unwrap();
-
-    unsafe {
-        cw_trigger
-            .subscribe(move || {
-                cw_notifier.notify_and_yield(Message::CW.into());
-            })
-            .unwrap();
-        ccw_trigger
-            .subscribe(move || {
-                ccw_notifier.notify_and_yield(Message::CCW.into());
-            })
-            .unwrap();
-    }
 
     let mut motor_a = MotorController::new(
         peripherals.ledc.timer0,
@@ -130,59 +78,43 @@ fn main() {
     timer.enable_alarm(true).unwrap();
     timer.enable(true).unwrap();
 
-    cw_trigger.enable_interrupt().unwrap();
-    ccw_trigger.enable_interrupt().unwrap();
-
     let mut dir = Option::<Direction>::None;
-    let mut enable = false;
     let mut integral: f32 = 0.0;
 
     loop {
-        let bitset = notification.wait(esp_idf_hal::delay::BLOCK).unwrap();
-
-        match Message::from(bitset) {
-            /*Message::CW => {
-                dir = Direction::CW;
-                enable = cw_trigger.is_high();
-                println!("clicked: {}", enable);
-                cw_trigger.enable_interrupt().unwrap();
-            }
-            Message::CCW => {
-                dir = Direction::CCW;
-                enable = ccw_trigger.is_high();
-                ccw_trigger.enable_interrupt().unwrap();
-            }*/
-            Message::TIMER => {
-                if cw_trigger.is_high() {
-                    dir = Some(Direction::CW);
-                } else if ccw_trigger.is_high() {
-                    dir = Some(Direction::CCW);
-                } else {
-                    dir = None;
-                } 
-                
-                let dir = match dir {
-                    Some(Direction::CW) => 1.0,
-                    Some(Direction::CCW) => -1.0,
-                    None => 0.0,
-                };
-
-                integral += (motor_a_controller.get_velocity_weak(PERIOD)
-                    - motor_b_controller.get_velocity_weak(PERIOD))
-                    * PERIOD;
-
-                motor_a_controller.step_towards_with_integral(
-                    SET_SPEED * dir,
-                    PERIOD,
-                    -1.0 * integral,
-                );
-                motor_b_controller.step_towards_with_integral(
-                    SET_SPEED * dir,
-                    PERIOD,
-                    integral,
-                );
-            }
-            _ => {}
+        if notification.wait(esp_idf_hal::delay::BLOCK).unwrap() != BITSET {
+            continue;
         }
+
+        if cw_trigger.is_high() {
+            dir = Some(Direction::CW);
+        } else if ccw_trigger.is_high() {
+            dir = Some(Direction::CCW);
+        } else {
+            dir = None;
+        } 
+
+        let dir = match dir {
+            Some(Direction::CW) => 1.0,
+            Some(Direction::CCW) => -1.0,
+            None => 0.0,
+        };
+
+        integral += (motor_a_controller.get_velocity_weak(PERIOD)
+            - motor_b_controller.get_velocity_weak(PERIOD))
+            * PERIOD;
+
+        let integral = if integral.abs() < 0.01 {integral} else {0.0};
+
+        motor_a_controller.step_towards_with_integral(
+            SET_SPEED * dir,
+            PERIOD,
+            -1.0 * integral,
+        );
+        motor_b_controller.step_towards_with_integral(
+            SET_SPEED * dir,
+            PERIOD,
+            integral,
+        );
     }
 }
