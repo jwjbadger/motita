@@ -144,7 +144,7 @@ impl<'a> MotorController<'a> {
 
     pub fn set_speed(&mut self, speed: f32) {
         self.pwm_driver
-            .set_duty((self.max_duty as f32 * speed.clamp(0.0, 1.0)) as u32)
+            .set_duty((self.max_duty as f32 * (if speed > 0.07 {speed} else {0.0})) as u32)
             .unwrap();
     }
 
@@ -184,9 +184,9 @@ impl<'a, 'b> PIDController<'a, 'b> {
             last_error: 0.0,
             integral: 0.0,
             speed_control: 0.0,
-            k_i: 0.005,
-            k_d: 0.00003,
-            k_p: 0.09,
+            k_i: 0.720,
+            k_d: 0.00005,
+            k_p: 0.15,
         }
     }
 
@@ -205,17 +205,12 @@ impl<'a, 'b> PIDController<'a, 'b> {
         velocity
     }
 
-    pub fn halt(&mut self) {
-        self.speed_control = 0.0;
-        self.motor_controller.set_speed(0.0);
-    }
-
     pub fn step_towards(&mut self, target_velocity: f32, dt: f32) {
         let velocity = self.get_velocity(dt);
 
         let error = target_velocity - velocity;
         self.integral += error * dt;
-        
+
         self.step(error, self.integral, (error - self.last_error) / dt);
 
         self.last_error = error;
@@ -231,10 +226,7 @@ impl<'a, 'b> PIDController<'a, 'b> {
     }
 
     fn step(&mut self, error: f32, integral: f32, derivative: f32) {
-        let delta = self.k_p * error
-            + self.k_i * integral 
-            + self.k_d * derivative;
-
+        let delta = self.k_p * error + self.k_i * integral + self.k_d * derivative;
 
         if delta.abs() > self.speed_control.abs()
             && (delta * self.speed_control < 0.0 || self.speed_control == 0.0)
@@ -249,6 +241,8 @@ impl<'a, 'b> PIDController<'a, 'b> {
             self.speed_control += delta;
         }
 
-        self.motor_controller.set_speed(self.speed_control.abs());
+        self.speed_control = self.speed_control.clamp(-1.0, 1.0);
+
+        self.motor_controller.set_speed(if self.speed_control.abs() > 0.01 {self.speed_control.abs()} else {0.0});
     }
 }

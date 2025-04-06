@@ -38,7 +38,8 @@ impl From<Message> for NonZeroU32 {
             Message::CCW => 0b01000000000,
             Message::TIMER => 0b00010000000,
             Message::ERR => 0b00000000000,
-        }).unwrap()
+        })
+        .unwrap()
     }
 }
 
@@ -59,7 +60,6 @@ fn main() {
     let motor_notifier = notification.notifier();
     let cw_notifier = motor_notifier.clone();
     let ccw_notifier = motor_notifier.clone();
-
 
     unsafe {
         timer
@@ -89,17 +89,12 @@ fn main() {
     unsafe {
         cw_trigger
             .subscribe(move || {
-                cw_notifier.notify_and_yield(
-                        Message::CW.into()
-                );
+                cw_notifier.notify_and_yield(Message::CW.into());
             })
             .unwrap();
         ccw_trigger
             .subscribe(move || {
-                ccw_notifier.notify_and_yield(
-                        Message::CCW
-                    .into(),
-                );
+                ccw_notifier.notify_and_yield(Message::CCW.into());
             })
             .unwrap();
     }
@@ -135,7 +130,10 @@ fn main() {
     timer.enable_alarm(true).unwrap();
     timer.enable(true).unwrap();
 
-    let mut dir = Direction::CW;
+    cw_trigger.enable_interrupt().unwrap();
+    ccw_trigger.enable_interrupt().unwrap();
+
+    let mut dir = Option::<Direction>::None;
     let mut enable = false;
     let mut integral: f32 = 0.0;
 
@@ -143,33 +141,48 @@ fn main() {
         let bitset = notification.wait(esp_idf_hal::delay::BLOCK).unwrap();
 
         match Message::from(bitset) {
-            Message::CW => {
+            /*Message::CW => {
                 dir = Direction::CW;
                 enable = cw_trigger.is_high();
+                println!("clicked: {}", enable);
+                cw_trigger.enable_interrupt().unwrap();
             }
             Message::CCW => {
                 dir = Direction::CCW;
                 enable = ccw_trigger.is_high();
-            }
+                ccw_trigger.enable_interrupt().unwrap();
+            }*/
             Message::TIMER => {
+                if cw_trigger.is_high() {
+                    dir = Some(Direction::CW);
+                } else if ccw_trigger.is_high() {
+                    dir = Some(Direction::CCW);
+                } else {
+                    dir = None;
+                } 
+                
                 let dir = match dir {
-                    Direction::CW => 1.0,
-                    Direction::CCW => -1.0,
+                    Some(Direction::CW) => 1.0,
+                    Some(Direction::CCW) => -1.0,
+                    None => 0.0,
                 };
 
-                integral += (motor_a_controller.get_velocity_weak(PERIOD) - motor_b_controller.get_velocity_weak(PERIOD)) * PERIOD;
+                integral += (motor_a_controller.get_velocity_weak(PERIOD)
+                    - motor_b_controller.get_velocity_weak(PERIOD))
+                    * PERIOD;
 
-                if enable {
-                    motor_a_controller.step_towards_with_integral(SET_SPEED * dir, PERIOD, -1.0 * integral);
-                    motor_b_controller.step_towards_with_integral(SET_SPEED * dir, PERIOD, integral);
-                } else {
-                    // TODO: does this actually stop the motor
-                    motor_a_controller.halt();
-                    motor_b_controller.halt();
-                }
+                motor_a_controller.step_towards_with_integral(
+                    SET_SPEED * dir,
+                    PERIOD,
+                    -1.0 * integral,
+                );
+                motor_b_controller.step_towards_with_integral(
+                    SET_SPEED * dir,
+                    PERIOD,
+                    integral,
+                );
             }
             _ => {}
         }
-
     }
 }
