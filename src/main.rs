@@ -1,5 +1,7 @@
+#![feature(const_option)]
+
 use esp_idf_hal::{
-    gpio::{InterruptType, PinDriver, Pull},
+    gpio::{PinDriver, Pull},
     peripherals::Peripherals,
     task::notification::Notification,
     timer::*,
@@ -10,7 +12,7 @@ use std::num::NonZeroU32;
 use motita::motor::*;
 
 const SET_SPEED: f32 = 8.0;
-const FREQUENCY: u64 = 60;
+const FREQUENCY: u64 = 120;
 const PERIOD: f32 = 1.0 / FREQUENCY as f32;
 const BITSET: NonZeroU32 = NonZeroU32::new(0b10001010101).unwrap();
 
@@ -78,7 +80,6 @@ fn main() {
     timer.enable_alarm(true).unwrap();
     timer.enable(true).unwrap();
 
-    let mut dir = Option::<Direction>::None;
     let mut integral: f32 = 0.0;
 
     loop {
@@ -86,25 +87,17 @@ fn main() {
             continue;
         }
 
-        if cw_trigger.is_high() {
-            dir = Some(Direction::CW);
-        } else if ccw_trigger.is_high() {
-            dir = Some(Direction::CCW);
-        } else {
-            dir = None;
-        } 
-
-        let dir = match dir {
-            Some(Direction::CW) => 1.0,
-            Some(Direction::CCW) => -1.0,
-            None => 0.0,
+        let dir = match (cw_trigger.is_high(), ccw_trigger.is_high()) {
+            (true, false) => 1.0,
+            (false, true) => -1.0,
+            _ => 0.0,
         };
 
         integral += (motor_a_controller.get_velocity_weak(PERIOD)
             - motor_b_controller.get_velocity_weak(PERIOD))
             * PERIOD;
-
-        let integral = if integral.abs() < 0.01 {integral} else {0.0};
+        
+        let integral = if integral < 0.005 { 0.0 } else { integral };
 
         motor_a_controller.step_towards_with_integral(
             SET_SPEED * dir,

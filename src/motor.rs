@@ -184,9 +184,9 @@ impl<'a, 'b> PIDController<'a, 'b> {
             last_error: 0.0,
             integral: 0.0,
             speed_control: 0.0,
-            k_i: 0.720,
+            k_i: 0.05,
             k_d: 0.00005,
-            k_p: 0.15,
+            k_p: 0.01,
         }
     }
 
